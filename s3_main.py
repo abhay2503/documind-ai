@@ -4,7 +4,9 @@ Simple production-style pipeline:
     S3 key -> download from S3 -> Docling -> HybridChunker -> LLM -> summary
 
 Run:
-    uv run python s3_main.py documents/test/small.pdf
+    uv run python s3_main.py documents/test/small.pdf                 # concise (default)
+    uv run python s3_main.py documents/test/small.pdf bullet_points
+    styles: concise | detailed | bullet_points | key_insights
 """
 
 import os
@@ -67,6 +69,30 @@ class SummaryResult(BaseModel):
     actionItems: list[str] = Field(description="Tasks or next steps mentioned; empty list if none")
 
 
+# ---------------------------------------------------------------
+# Summary styles = the same JSON shape, but different instructions for each style.
+# The keys are exactly the values the Node API stores in summary_jobs.summary_style.
+# ---------------------------------------------------------------
+STYLES = {
+    "concise": (
+        "Keep it short. Overview: 2 sentences. "
+        "At most 3 key points, 2 findings and 3 action items."
+    ),
+    "detailed": (
+        "Be thorough. Overview: one full paragraph. Cover every major section of the document. "
+        "Give 6-10 key points and explain each finding in 2-3 sentences."
+    ),
+    "bullet_points": (
+        "Focus on the key points: 8-12 short bullets, each one fact, under 20 words. "
+        "Keep the overview to 1-2 sentences."
+    ),
+    "key_insights": (
+        "Focus on insights: what is surprising, important or risky, and why it matters. "
+        "Put most of the value in findings (4-6), each explaining the impact."
+    ),
+}
+
+
 # Same model, but now it must answer with a SummaryResult instead of free text
 structured_llm = llm.with_structured_output(SummaryResult)
 
@@ -107,11 +133,13 @@ def make_chunks(doc):
 # ---------------------------------------------------------------
 # STEP 3: chunks -> LLM -> summary
 # ---------------------------------------------------------------
-def summarize(chunks):
+def summarize(chunks, style):
     text = "\n\n".join(chunks)
     messages = [
-        ("system", SYSTEM_PROMPT),                                   # the rules
-        ("human", "Summarize this document:\n\n" + text),           # the actual job
+        ("system", SYSTEM_PROMPT),                                   # the rules (same for every style)
+        ("human",                                                    # the actual job
+         f"Summary style: {style}\n{STYLES[style]}\n\n"
+         f"Summarize this document:\n\n{text}"),
     ]
     return structured_llm.invoke(messages)   # a SummaryResult object, already validated
 
@@ -119,7 +147,11 @@ def summarize(chunks):
 # ---------------------------------------------------------------
 # The whole job
 # ---------------------------------------------------------------
-def process(s3_key):
+def process(s3_key, style="concise"):
+    # Check the style first: fail fast, before the slow download and Docling work
+    if style not in STYLES:
+        raise ValueError(f"Unknown style {style!r}. Use one of: {', '.join(STYLES)}")
+
     # The temporary folder (and the downloaded file) is deleted automatically at the end,
     # even if something fails. On Lambda, /tmp is small and is reused between jobs.
     with tempfile.TemporaryDirectory() as folder:
@@ -128,11 +160,13 @@ def process(s3_key):
 
     chunks = make_chunks(doc)
     print(f"{len(chunks)} chunks")
-    return summarize(chunks)
+    return summarize(chunks, style)
 
 
 if __name__ == "__main__":
-    summary = process(sys.argv[1])
+    s3_key = sys.argv[1]
+    style = sys.argv[2] if len(sys.argv) > 2 else "concise"   # optional 2nd argument
+    summary = process(s3_key, style)
     print("\nOverview:", summary.overview)        # use it like a normal Python object
     print("\nJSON (what we will save to MySQL):")
     print(summary.model_dump_json(indent=2))
