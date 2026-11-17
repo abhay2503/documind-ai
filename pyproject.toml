@@ -9,6 +9,7 @@ dependencies = [
     "transformers==5.23.0",
     "torch==2.15.0",
     "groq",
+    "langchain-aws",
     "langchain-groq",
     "pydantic",
     "boto3==1.44.3",

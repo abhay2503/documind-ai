@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 from docling.chunking import HybridChunker
 from docling.document_converter import DocumentConverter
 from dotenv import load_dotenv
+from langchain_aws import ChatBedrockConverse
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from hierarchical.postprocessor import ResultPostprocessor   # pip: docling-hierarchical-pdf
@@ -32,6 +33,7 @@ BUCKET = os.environ["S3_BUCKET_NAME"]
 REGION = os.environ.get("AWS_REGION", "ap-south-1")
 ENDPOINT = os.environ.get("LOCAL_AWS_ENDPOINT") or None   # LocalStack locally, empty on real AWS
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "")    # empty = use Groq only
 
 # ---------------------------------------------------------------
 # Create clients and load AI models ONCE (slow), reuse them for every document
@@ -40,7 +42,13 @@ s3 = boto3.client("s3", region_name=REGION, endpoint_url=ENDPOINT)
 converter = DocumentConverter()
 tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 chunker = HybridChunker(tokenizer=tokenizer, max_tokens=512, merge_peers=True)
-llm = ChatGroq(model=GROQ_MODEL, temperature=0)   # reads GROQ_API_KEY from .env
+groq_llm = ChatGroq(model=GROQ_MODEL, temperature=0)   # reads GROQ_API_KEY from .env
+
+if BEDROCK_MODEL_ID:
+    # Main model: Claude on AWS Bedrock (no endpoint_url: Bedrock is always real AWS, never LocalStack)
+    bedrock_llm = ChatBedrockConverse(model=BEDROCK_MODEL_ID, region_name=REGION, temperature=0)
+else:
+    bedrock_llm = None
 
 # ---------------------------------------------------------------
 # System prompt = the rules the model must always follow
@@ -94,7 +102,13 @@ STYLES = {
 
 
 # Same model, but now it must answer with a SummaryResult instead of free text
-structured_llm = llm.with_structured_output(SummaryResult)
+groq_structured = groq_llm.with_structured_output(SummaryResult)
+
+if bedrock_llm:
+    # Try Bedrock first. If it fails (throttled, down, timeout...), LangChain calls Groq instead.
+    structured_llm = bedrock_llm.with_structured_output(SummaryResult).with_fallbacks([groq_structured])
+else:
+    structured_llm = groq_structured
 
 
 # ---------------------------------------------------------------
