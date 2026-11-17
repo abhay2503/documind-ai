@@ -102,7 +102,9 @@ STYLES = {
 
 
 # Same model, but now it must answer with a SummaryResult instead of free text
-groq_structured = groq_llm.with_structured_output(SummaryResult)
+# json_schema + strict: Groq forces the answer to match SummaryResult exactly
+# (the default "tool calling" mode let gpt-oss reply in plain markdown instead -> error 400)
+groq_structured = groq_llm.with_structured_output(SummaryResult, method="json_schema", strict=True)
 
 if bedrock_llm:
     # Try Bedrock first. If it fails (throttled, down, timeout...), LangChain calls Groq instead.
