@@ -5,6 +5,7 @@
 
 import os
 import sys
+import uuid
 
 import boto3
 from dotenv import load_dotenv
@@ -18,7 +19,12 @@ s3 = boto3.client(
 )
 
 local_file = sys.argv[1]
-key = "documents/test/" + os.path.basename(local_file)
+document_id = "doc_" + uuid.uuid4().hex                     # same ID format as the Node API
+key = f"documents/{document_id}/{os.path.basename(local_file)}"
 
 s3.upload_file(local_file, os.environ["S3_BUCKET_NAME"], key)
 print("Uploaded. S3 key:", key)
+print("documentId:", document_id)
+print("\nNext:")
+print(f"  uv run python s3_main.py {key}")
+print(f"  uv run python handler.py {document_id}")
