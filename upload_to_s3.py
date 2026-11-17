@@ -3,8 +3,8 @@
     1. puts the file into S3 (LocalStack)
     2. inserts a row in `documents` and a 'queued' row in `summary_jobs` (local MySQL)
 
-    uv run python upload_to_s3.py ../ai/tests/fixtures/generated/small.pdf            # concise
-    uv run python upload_to_s3.py ../ai/tests/fixtures/generated/small.pdf detailed
+    uv run python upload_to_s3.py samples/small.pdf            # concise
+    uv run python upload_to_s3.py samples/small.pdf detailed
 """
 
 import mimetypes
@@ -33,8 +33,15 @@ document_id = "doc_" + uuid.uuid4().hex                     # same ID format as 
 job_id = "job_" + uuid.uuid4().hex
 key = f"documents/{document_id}/{file_name}"
 
-# 1. S3
-s3.upload_file(local_file, os.environ["S3_BUCKET_NAME"], key)
+# 1. S3 (locally the bucket may not exist yet: create it once)
+bucket = os.environ["S3_BUCKET_NAME"]
+if os.environ.get("LOCAL_AWS_ENDPOINT"):
+    try:
+        s3.head_bucket(Bucket=bucket)
+    except s3.exceptions.ClientError:
+        s3.create_bucket(Bucket=bucket,
+                         CreateBucketConfiguration={"LocationConstraint": os.environ["AWS_REGION"]})
+s3.upload_file(local_file, bucket, key)
 
 # 2. MySQL
 db.run(

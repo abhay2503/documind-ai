@@ -53,15 +53,24 @@ def get_job(job_id):
 
 # ---------------------------------------------------------------
 # queued -> processing
-# "AND status = 'queued'" makes this safe: if SQS delivers the same message twice,
+# The WHERE makes this safe: if SQS delivers the same message twice,
 # only ONE worker changes the row (changed == 1). The other gets 0 and stops.
+#
+# Crash rule: Lambda can run at most 15 minutes. So a job that has been 'processing'
+# for more than 20 minutes means the Lambda crashed -> allow the retry to take it over.
 # ---------------------------------------------------------------
+STUCK_AFTER_MINUTES = 20
+
+
 def start_job(job_id):
     _, changed = run(
         """UPDATE summary_jobs
            SET status = 'processing', started_at = UTC_TIMESTAMP(3), retry_count = retry_count + 1
-           WHERE job_id = %s AND status = 'queued'""",
-        (job_id,),
+           WHERE job_id = %s
+             AND (status = 'queued'
+                  OR (status = 'processing'
+                      AND updated_at < UTC_TIMESTAMP(3) - INTERVAL %s MINUTE))""",
+        (job_id, STUCK_AFTER_MINUTES),
     )
     return changed == 1
 

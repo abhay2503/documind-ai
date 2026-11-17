@@ -1,5 +1,5 @@
 [project]
-name = "learn-phase1"
+name = "documind-ai"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -8,6 +8,7 @@ dependencies = [
     "docling-hierarchical-pdf==0.2.0",
     "transformers==5.23.0",
     "torch==2.15.0",
+    "torchvision==0.29.2",
     "groq",
     "langchain-aws",
     "langchain-groq",
@@ -25,6 +26,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [tool.uv]
 package = false

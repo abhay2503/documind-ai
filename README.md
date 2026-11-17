@@ -1,4 +1,4 @@
-# Learning project: document summarizer
+# DocuMind AI: document summarizer
 
 | File | What it does |
 |---|---|
@@ -10,7 +10,7 @@
 ## Setup
 
 ```bash
-cd learn-phase1
+cd ai
 cp .env.example .env          # put your Groq key in .env
 uv sync
 ```
@@ -18,17 +18,15 @@ uv sync
 ## 1. Local file
 
 ```bash
-uv run python main.py ../ai/tests/fixtures/generated/small.pdf
+uv run python main.py samples/small.pdf
 ```
 
 ## 2. From S3
 
-Start LocalStack first (from the API project): `cd ../api && npm run localstack:up`
-
-Also start the Node API's MySQL, and put its DB settings in `.env`.
+Start local MySQL + S3 first (Docker): `docker compose up -d --wait`
 
 ```bash
-uv run python upload_to_s3.py ../ai/tests/fixtures/generated/small.pdf
+uv run python upload_to_s3.py samples/small.pdf
 # -> S3 key: documents/doc_<id>/small.pdf, documentId, jobId (a 'queued' row in MySQL)
 
 uv run python s3_main.py documents/doc_<id>/small.pdf
