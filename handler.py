@@ -1,20 +1,25 @@
 """
-Lambda entry point:  SQS message -> find the file in S3 -> summarize (s3_main.process)
+Lambda entry point:
+
+    SQS {jobId, documentId} -> MySQL (s3_key, style) -> s3_main.process -> MySQL (result, status)
 
 What SQS gives Lambda:
-    {"Records": [{"messageId": "...", "body": "{\"jobId\": \"job_...\", \"documentId\": \"doc_...\"}"}]}
+    {"Records": [{"messageId": "...", "body": "{\"jobId\": \"job_...\", \"documentId\": \"doc_...\"}",
+                  "attributes": {"ApproximateReceiveCount": "1"}}]}
 
-Test locally (no AWS needed, uses LocalStack S3):
-    uv run python handler.py doc_<32 hex>      # the documentId printed by upload_to_s3.py
+Test locally (LocalStack S3 + the Node API's local MySQL):
+    uv run python handler.py job_<32 hex> doc_<32 hex>     # both printed by upload_to_s3.py
 """
 
 import json
 import sys
-import uuid
 
 from pydantic import BaseModel, Field
 
-from s3_main import BUCKET, process, s3   # models load once here, reused on warm Lambda calls
+import db
+from s3_main import process   # models load once here, reused on warm Lambda calls
+
+MAX_ATTEMPTS = 3   # must match the queue's maxReceiveCount (after 3 tries SQS moves it to the DLQ)
 
 
 # ---------------------------------------------------------------
@@ -31,30 +36,50 @@ def parse_message(body):
 
 
 # ---------------------------------------------------------------
-# documentId -> S3 key
-# The Node API stores files at documents/{documentId}/{fileName}.
-# (Next step: read the key from MySQL instead of listing S3.)
-# ---------------------------------------------------------------
-def find_s3_key(document_id):
-    response = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"documents/{document_id}/")
-    files = response.get("Contents", [])
-    if not files:
-        raise FileNotFoundError(f"No file in S3 for {document_id}")
-    return files[0]["Key"]
-
-
-# ---------------------------------------------------------------
 # One message = one job
+# Return normally  -> message is done (deleted from the queue)
+# Raise an error   -> message comes back later for a retry
 # ---------------------------------------------------------------
 def handle_record(record):
     message = parse_message(record["body"])
-    print(f"[{message.jobId}] started, document {message.documentId}")
+    job_id = message.jobId
 
-    s3_key = find_s3_key(message.documentId)
-    summary = process(s3_key, style="concise")      # next step: style comes from MySQL
+    # 1. Read the job from MySQL
+    job = db.get_job(job_id)
+    if job is None or job["document_id"] != message.documentId:
+        raise ValueError(f"Job {job_id} not found for document {message.documentId}")
 
-    print(f"[{message.jobId}] done")
-    print(summary.model_dump_json(indent=2))        # next step: save to MySQL instead
+    if job["status"] in ("completed", "failed"):
+        print(f"[{job_id}] already {job['status']}, nothing to do")   # duplicate message
+        return
+
+    # 2. queued -> processing (only one worker can win this)
+    if not db.start_job(job_id):
+        print(f"[{job_id}] already being processed by another worker")
+        return
+
+    print(f"[{job_id}] processing {job['s3_key']} ({job['summary_style']})")
+
+    # 3. Do the work, then save the result
+    try:
+        summary = process(job["s3_key"], job["summary_style"])
+    except Exception as error:
+        print(f"[{job_id}] error: {type(error).__name__}: {error}")
+
+        attempt = int(record.get("attributes", {}).get("ApproximateReceiveCount", "1"))
+        if attempt >= MAX_ATTEMPTS:
+            # Last try: tell the user it failed, and stop retrying
+            db.fail_job(job_id, "PROCESSING_FAILED",
+                        "We could not generate a summary for this document. Please try again.")
+            print(f"[{job_id}] failed after {attempt} attempts")
+            return
+
+        # Not the last try: put the job back to 'queued' so the retry can start it again
+        db.release_job(job_id)
+        raise
+
+    db.complete_job(job_id, summary.model_dump())
+    print(f"[{job_id}] completed")
 
 
 # ---------------------------------------------------------------
@@ -66,8 +91,8 @@ def handler(event, context):
         try:
             handle_record(record)
         except Exception as error:
-            # Tell SQS "this message failed": it comes back later for a retry,
-            # and after 3 failures it goes to the dead-letter queue (DLQ).
+            # Any error here (including "MySQL is down") -> SQS retries this message.
+            # We never lose a message just because the database was unavailable.
             print(f"[{record['messageId']}] FAILED: {type(error).__name__}: {error}")
             failures.append({"itemIdentifier": record["messageId"]})
 
@@ -82,7 +107,8 @@ if __name__ == "__main__":
     fake_event = {
         "Records": [{
             "messageId": "local-test-1",
-            "body": json.dumps({"jobId": "job_" + uuid.uuid4().hex, "documentId": sys.argv[1]}),
+            "body": json.dumps({"jobId": sys.argv[1], "documentId": sys.argv[2]}),
+            "attributes": {"ApproximateReceiveCount": "1"},
         }]
     }
     print(handler(fake_event, None))

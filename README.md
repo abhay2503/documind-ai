@@ -25,17 +25,19 @@ uv run python main.py ../ai/tests/fixtures/generated/small.pdf
 
 Start LocalStack first (from the API project): `cd ../api && npm run localstack:up`
 
+Also start the Node API's MySQL, and put its DB settings in `.env`.
+
 ```bash
 uv run python upload_to_s3.py ../ai/tests/fixtures/generated/small.pdf
-# -> Uploaded. S3 key: documents/doc_<id>/small.pdf
-# -> documentId: doc_<id>
+# -> S3 key: documents/doc_<id>/small.pdf, documentId, jobId (a 'queued' row in MySQL)
 
 uv run python s3_main.py documents/doc_<id>/small.pdf
 ```
 
-## 3. Like Lambda (SQS message)
+## 3. Like Lambda (SQS message + MySQL)
 
 ```bash
-uv run python handler.py doc_<id>
-# builds a fake SQS event {"jobId", "documentId"} and calls handler(event, context)
+uv run python handler.py job_<id> doc_<id>
+# builds a fake SQS event {"jobId", "documentId"}, calls handler(event, context),
+# and saves the result in summary_jobs (status: queued -> processing -> completed)
 ```
