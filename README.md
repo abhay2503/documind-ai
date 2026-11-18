@@ -39,3 +39,19 @@ uv run python handler.py job_<id> doc_<id>
 # builds a fake SQS event {"jobId", "documentId"}, calls handler(event, context),
 # and saves the result in summary_jobs (status: queued -> processing -> completed)
 ```
+
+## 4. Like real Lambda (Docker)
+
+```bash
+docker build -t documind-ai .                                   # once (10-15 min, ~5 GB)
+
+# start the "Lambda" (uses your .env; --network host so it can reach local MySQL + S3)
+docker run --rm --network host --env-file .env documind-ai
+
+# in a second terminal: create a job, then send the SQS event to the Lambda
+uv run python upload_to_s3.py samples/small.pdf
+curl -s localhost:8080/2015-03-31/functions/function/invocations -d '{
+  "Records": [{"messageId": "m1", "attributes": {"ApproximateReceiveCount": "1"},
+               "body": "{\"jobId\": \"job_<id>\", \"documentId\": \"doc_<id>\"}"}]}'
+# -> {"batchItemFailures": []}  and the job is 'completed' in MySQL
+```
