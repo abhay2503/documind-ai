@@ -1,35 +1,11 @@
-# Local MySQL + S3 for this project (nothing touches real AWS).
+# Local S3 (LocalStack) for this project (nothing touches real AWS).
+# The database is the PostgreSQL server installed on this machine (127.0.0.1:5432), not a container.
 #
 #   docker compose up -d --wait      # start
 #   docker compose down              # stop (all data is thrown away)
-#
-# MySQL loads the Node API's table definitions (read-only) from ../api, so it has the
-# same `documents` and `summary_jobs` tables.
 name: documind-ai
 
 services:
-  mysql:
-    image: mysql:8.4
-    container_name: documind-ai-mysql
-    ports:
-      - "127.0.0.1:3307:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: root-local-password
-      MYSQL_DATABASE: documind
-      MYSQL_USER: documind
-      MYSQL_PASSWORD: documind-local-password
-      TZ: UTC
-    command: ["--default-time-zone=+00:00"]
-    volumes:
-      - ../api/database/migrations:/docker-entrypoint-initdb.d:ro
-    tmpfs:
-      - /var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysql -udocumind -pdocumind-local-password -e 'SELECT 1 FROM summary_jobs LIMIT 1' documind"]
-      interval: 3s
-      timeout: 3s
-      retries: 40
-
   s3:
     image: localstack/localstack:4.14.0
     container_name: documind-ai-s3

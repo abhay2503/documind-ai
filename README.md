@@ -23,16 +23,16 @@ uv run python main.py samples/small.pdf
 
 ## 2. From S3
 
-Start local MySQL + S3 first (Docker): `docker compose up -d --wait`
+Start local S3 first (Docker; the database is your local PostgreSQL on 127.0.0.1:5432): `docker compose up -d --wait`
 
 ```bash
 uv run python upload_to_s3.py samples/small.pdf
-# -> S3 key: documents/doc_<id>/small.pdf, documentId, jobId (a 'queued' row in MySQL)
+# -> S3 key: documents/doc_<id>/small.pdf, documentId, jobId (a 'queued' row in PostgreSQL)
 
 uv run python s3_main.py documents/doc_<id>/small.pdf
 ```
 
-## 3. Like Lambda (SQS message + MySQL)
+## 3. Like Lambda (SQS message + PostgreSQL)
 
 ```bash
 uv run python handler.py job_<id> doc_<id>
@@ -45,7 +45,7 @@ uv run python handler.py job_<id> doc_<id>
 ```bash
 docker build -t documind-ai .                                   # once (10-15 min, ~5 GB)
 
-# start the "Lambda" (uses your .env; --network host so it can reach local MySQL + S3)
+# start the "Lambda" (uses your .env; --network host so it can reach local PostgreSQL + S3)
 docker run --rm --network host --env-file .env documind-ai
 
 # in a second terminal: create a job, then send the SQS event to the Lambda
@@ -53,5 +53,25 @@ uv run python upload_to_s3.py samples/small.pdf
 curl -s localhost:8080/2015-03-31/functions/function/invocations -d '{
   "Records": [{"messageId": "m1", "attributes": {"ApproximateReceiveCount": "1"},
                "body": "{\"jobId\": \"job_<id>\", \"documentId\": \"doc_<id>\"}"}]}'
-# -> {"batchItemFailures": []}  and the job is 'completed' in MySQL
+# -> {"batchItemFailures": []}  and the job is 'completed' in PostgreSQL
 ```
+
+## Database (PostgreSQL)
+
+The worker and the Node API share one PostgreSQL database named `documind` (tables `documents`, `summary_jobs`; schema in `../api/database/migrations`). Create it and apply the schema from `../api`:
+
+```bash
+PGPASSWORD=<password> psql -h 127.0.0.1 -U postgres -d postgres -f ../api/database/setup-local.sql
+(cd ../api && npm run migrate)
+uv run python test_db_connection.py      # prints version() and current_database()
+```
+
+The same code runs locally and on Aiven; only these variables change:
+
+| | Local | Aiven |
+|---|---|---|
+| `DB_HOST` / `DB_PORT` | `127.0.0.1` / `5432` | from the Aiven console |
+| `DB_USER` | `postgres` | `avnadmin` |
+| `DB_PASSWORD` | your local password | Aiven password (set as a Lambda secret/env var, never committed) |
+| `DB_NAME` | `documind` | `documind` |
+| `DB_SSLMODE` | `disable` | `require` |

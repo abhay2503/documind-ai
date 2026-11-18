@@ -13,9 +13,9 @@ dependencies = [
     "langchain-aws",
     "langchain-groq",
     "pydantic",
-    "PyMySQL==1.2.4",
     "boto3==1.44.3",
     "python-dotenv",
+    "psycopg[binary]==3.3.9",
 ]
 
 # CPU-only torch (much smaller download)

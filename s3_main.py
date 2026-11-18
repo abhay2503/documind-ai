@@ -184,5 +184,5 @@ if __name__ == "__main__":
     style = sys.argv[2] if len(sys.argv) > 2 else "concise"   # optional 2nd argument
     summary = process(s3_key, style)
     print("\nOverview:", summary.overview)        # use it like a normal Python object
-    print("\nJSON (what we will save to MySQL):")
+    print("\nJSON (what we will save to PostgreSQL):")
     print(summary.model_dump_json(indent=2))

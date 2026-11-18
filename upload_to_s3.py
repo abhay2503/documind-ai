@@ -1,7 +1,7 @@
 """Helper for local testing: does what the Node API does when a user uploads a file and asks for a summary.
 
     1. puts the file into S3 (LocalStack)
-    2. inserts a row in `documents` and a 'queued' row in `summary_jobs` (local MySQL)
+    2. inserts a row in `documents` and a 'queued' row in `summary_jobs` (local PostgreSQL)
 
     uv run python upload_to_s3.py samples/small.pdf            # concise
     uv run python upload_to_s3.py samples/small.pdf detailed
@@ -43,10 +43,10 @@ if os.environ.get("LOCAL_AWS_ENDPOINT"):
                          CreateBucketConfiguration={"LocationConstraint": os.environ["AWS_REGION"]})
 s3.upload_file(local_file, bucket, key)
 
-# 2. MySQL
+# 2. PostgreSQL
 db.run(
     """INSERT INTO documents (document_id, file_name, content_type, file_size, s3_key, status, uploaded_at)
-       VALUES (%s, %s, %s, %s, %s, 'uploaded', UTC_TIMESTAMP(3))""",
+       VALUES (%s, %s, %s, %s, %s, 'uploaded', CURRENT_TIMESTAMP(3))""",
     (document_id, file_name, mimetypes.guess_type(file_name)[0] or "application/octet-stream",
      os.path.getsize(local_file), key),
 )

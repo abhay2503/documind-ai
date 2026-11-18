@@ -1,13 +1,13 @@
 """
 Lambda entry point:
 
-    SQS {jobId, documentId} -> MySQL (s3_key, style) -> s3_main.process -> MySQL (result, status)
+    SQS {jobId, documentId} -> PostgreSQL (s3_key, style) -> s3_main.process -> PostgreSQL (result, status)
 
 What SQS gives Lambda:
     {"Records": [{"messageId": "...", "body": "{\"jobId\": \"job_...\", \"documentId\": \"doc_...\"}",
                   "attributes": {"ApproximateReceiveCount": "1"}}]}
 
-Test locally (LocalStack S3 + the Node API's local MySQL):
+Test locally (LocalStack S3 + the Node API's local PostgreSQL):
     uv run python handler.py job_<32 hex> doc_<32 hex>     # both printed by upload_to_s3.py
 """
 
@@ -44,7 +44,7 @@ def handle_record(record):
     message = parse_message(record["body"])
     job_id = message.jobId
 
-    # 1. Read the job from MySQL
+    # 1. Read the job from PostgreSQL
     job = db.get_job(job_id)
     if job is None or job["document_id"] != message.documentId:
         raise ValueError(f"Job {job_id} not found for document {message.documentId}")
@@ -91,7 +91,7 @@ def handler(event, context):
         try:
             handle_record(record)
         except Exception as error:
-            # Any error here (including "MySQL is down") -> SQS retries this message.
+            # Any error here (including "PostgreSQL is down") -> SQS retries this message.
             # We never lose a message just because the database was unavailable.
             print(f"[{record['messageId']}] FAILED: {type(error).__name__}: {error}")
             failures.append({"itemIdentifier": record["messageId"]})

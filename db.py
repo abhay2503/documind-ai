@@ -1,26 +1,29 @@
 """
-All MySQL code in one place. Same database as the Node API (tables: documents, summary_jobs).
+All PostgreSQL code in one place. Same database as the Node API (tables: documents, summary_jobs).
 
 Job status flow:   queued -> processing -> completed   (or -> failed)
 """
 
-import json
 import os
 
-import pymysql
+import psycopg
 from dotenv import load_dotenv
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 load_dotenv()
 
 
 def connect():
-    return pymysql.connect(
+    # Local Postgres and Aiven differ only in these environment variables.
+    return psycopg.connect(
         host=os.environ.get("DB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("DB_PORT", "3306")),
+        port=int(os.environ.get("DB_PORT", "5432")),
+        dbname=os.environ.get("DB_NAME", "documind"),
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASSWORD"],
-        database=os.environ.get("DB_NAME", "documind"),
-        cursorclass=pymysql.cursors.DictCursor,   # rows come back as dicts: row["s3_key"]
+        sslmode=os.environ.get("DB_SSLMODE", "disable"),   # disable locally, require on Aiven
+        row_factory=dict_row,                     # rows come back as dicts: row["s3_key"]
         autocommit=True,                          # each UPDATE is saved immediately
         connect_timeout=5,                        # DB down? fail fast instead of hanging
     )
@@ -31,8 +34,9 @@ def run(sql, params):
     connection = connect()
     try:
         with connection.cursor() as cursor:
-            changed = cursor.execute(sql, params)
-            return cursor.fetchall(), changed
+            cursor.execute(sql, params)
+            rows = cursor.fetchall() if cursor.description else []   # UPDATE/INSERT return no rows
+            return rows, cursor.rowcount
     finally:
         connection.close()
 
@@ -65,11 +69,11 @@ STUCK_AFTER_MINUTES = 20
 def start_job(job_id):
     _, changed = run(
         """UPDATE summary_jobs
-           SET status = 'processing', started_at = UTC_TIMESTAMP(3), retry_count = retry_count + 1
+           SET status = 'processing', started_at = CURRENT_TIMESTAMP(3), retry_count = retry_count + 1
            WHERE job_id = %s
              AND (status = 'queued'
                   OR (status = 'processing'
-                      AND updated_at < UTC_TIMESTAMP(3) - INTERVAL %s MINUTE))""",
+                      AND updated_at < CURRENT_TIMESTAMP(3) - make_interval(mins => %s)))""",
         (job_id, STUCK_AFTER_MINUTES),
     )
     return changed == 1
@@ -81,10 +85,10 @@ def start_job(job_id):
 def complete_job(job_id, result):
     run(
         """UPDATE summary_jobs
-           SET status = 'completed', result = %s, completed_at = UTC_TIMESTAMP(3),
+           SET status = 'completed', result = %s, completed_at = CURRENT_TIMESTAMP(3),
                error_code = NULL, error_message = NULL
            WHERE job_id = %s AND status = 'processing'""",
-        (json.dumps(result), job_id),
+        (Jsonb(result), job_id),
     )
 
 
@@ -94,7 +98,7 @@ def complete_job(job_id, result):
 def fail_job(job_id, error_code, error_message):
     run(
         """UPDATE summary_jobs
-           SET status = 'failed', error_code = %s, error_message = %s, completed_at = UTC_TIMESTAMP(3)
+           SET status = 'failed', error_code = %s, error_message = %s, completed_at = CURRENT_TIMESTAMP(3)
            WHERE job_id = %s AND status = 'processing'""",
         (error_code, error_message, job_id),
     )
