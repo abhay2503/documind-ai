@@ -46,7 +46,8 @@ groq_llm = ChatGroq(model=GROQ_MODEL, temperature=0)   # reads GROQ_API_KEY from
 
 if BEDROCK_MODEL_ID:
     # Main model: Claude on AWS Bedrock (no endpoint_url: Bedrock is always real AWS, never LocalStack)
-    bedrock_llm = ChatBedrockConverse(model=BEDROCK_MODEL_ID, region_name=REGION, temperature=0)
+    # No temperature: the newest Claude models only accept the default sampling settings
+    bedrock_llm = ChatBedrockConverse(model=BEDROCK_MODEL_ID, region_name=REGION)
 else:
     bedrock_llm = None
 
@@ -108,7 +109,9 @@ groq_structured = groq_llm.with_structured_output(SummaryResult, method="json_sc
 
 if bedrock_llm:
     # Try Bedrock first. If it fails (throttled, down, timeout...), LangChain calls Groq instead.
-    structured_llm = bedrock_llm.with_structured_output(SummaryResult).with_fallbacks([groq_structured])
+    # json_schema = Bedrock's native JSON output (newer Claude models reject the old "forced tool" way)
+    bedrock_structured = bedrock_llm.with_structured_output(SummaryResult, method="json_schema")
+    structured_llm = bedrock_structured.with_fallbacks([groq_structured])
 else:
     structured_llm = groq_structured
 
