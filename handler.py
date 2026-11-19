@@ -17,6 +17,7 @@ import sys
 from pydantic import BaseModel, Field
 
 import db
+from errors import classify
 from s3_main import process   # models load once here, reused on warm Lambda calls
 
 MAX_ATTEMPTS = 3   # must match the queue's maxReceiveCount (after 3 tries SQS moves it to the DLQ)
@@ -65,6 +66,14 @@ def handle_record(record):
         summary = process(job["s3_key"], job["summary_style"])
     except Exception as error:
         print(f"[{job_id}] error: {type(error).__name__}: {error}")
+
+        # Permanent error (e.g. document too large for the model): retrying can never work.
+        # Mark the job failed and return normally, so SQS deletes the message.
+        permanent = classify(error)
+        if permanent is not None:
+            db.fail_job(job_id, permanent.code, permanent.message)
+            print(f"[{job_id}] failed, not retrying: {permanent.code}")
+            return
 
         attempt = int(record.get("attributes", {}).get("ApproximateReceiveCount", "1"))
         if attempt >= MAX_ATTEMPTS:

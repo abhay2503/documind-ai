@@ -1,0 +1,149 @@
+mapreduce.py - SIMPLE EXPLANATION (for interview)
+==================================================
+
+ONE-LINE ANSWER
+---------------
+"When a document is too big for one LLM request, I split it into parts,
+summarize each part into short notes (MAP), then summarize all the notes into
+one final summary (REDUCE). I also slow down the requests so I never cross the
+provider's tokens-per-minute limit."
+
+
+1. THE PROBLEM
+--------------
+The LLM (Groq free tier) has limits:
+  - how many tokens one request can have
+  - how many tokens we can use per MINUTE (8,000)
+
+A big PDF does not fit in one request. So we cannot just send it all at once.
+
+
+2. THE IDEA (think of it like studying for an exam)
+---------------------------------------------------
+You have a 500-page book.
+  Step 1: Read a few pages at a time and write short notes   -> MAP
+  Step 2: Read all your short notes and write one summary    -> REDUCE
+
+If the notes are STILL too long, make notes of the notes again (up to 3 rounds).
+
+
+3. THE FLOW
+-----------
+
+   Document
+      |
+   chunks (small pieces)
+      |
+   group chunks into batches (each batch is small enough for one request)
+      |
+   MAP: LLM turns each batch into short notes
+      |
+   notes small enough?  -- no --> shrink notes again (max 3 rounds)
+      |
+     yes
+      |
+   REDUCE: LLM reads all notes -> final summary
+
+
+4. THE LIMITS (the numbers at the top of the file)
+--------------------------------------------------
+Think of "token" as roughly a word piece. These are the rules we set:
+
+  MAP_BATCH_MAX = 3000
+      Each MAP request gets at most 3000 tokens of document text.
+
+  FINAL_MAX = 5000
+      The final request may read at most 5000 tokens of notes.
+      If notes are bigger, shrink them again.
+
+  TPM_BUDGET = 7000
+      We allow ourselves 7000 tokens per minute.
+      The real limit is 8000; the extra 1000 is a safety cushion.
+
+  SAFETY_FACTOR = 1.3
+      Our token counter counts a bit LESS than the LLM does,
+      so we multiply by 1.3 to be safe.
+
+  MAX_MAP_CALLS = 12
+      Max 12 MAP requests in total. If a document needs more, we stop
+      early with an error instead of waiting many minutes and failing later.
+
+  MAX_ROUNDS = 3
+      Notes can be shrunk at most 3 times.
+
+  RETRIES_ON_429 = 3
+      If the provider says "too many requests" (HTTP 429), wait and retry
+      up to 3 times.
+
+  Small helper numbers (just size estimates for the instructions/answer):
+      MAP_PROMPT_TOKENS = 300, MAP_MAX_OUTPUT = 700, FINAL_OVERHEAD = 1500
+
+Why the numbers work:
+  One MAP request   = 3000 text + 300 instructions + 700 answer = 4000 (fits 7000)
+  The FINAL request = 5000 notes + 1500 instructions/answer     = 6500 (fits 7000)
+  So any single request always fits inside the per-minute budget.
+
+
+5. THE PARTS OF THE CODE
+------------------------
+estimate_tokens
+    Guesses how many tokens a text has (a bit on the high side, to be safe).
+
+make_batches
+    Puts chunks together into groups, keeping the document order, so each
+    group stays under the 3000-token limit.
+
+RateLimiter
+    The "traffic police". Remembers what we spent in the last 60 seconds.
+    If the next request would go over 7000, it waits until enough time has
+    passed.
+
+paced_call
+    Makes one LLM call, but first asks the RateLimiter for permission.
+    If the provider still answers 429, it waits and tries again (max 3 times).
+    Any other error is raised to the caller.
+
+summarize_large
+    The main function that does the whole thing:
+      1. Make batches
+      2. Check the number of MAP calls is not above 12 (else error)
+      3. MAP each batch (with pacing) to get notes
+      4. If notes are bigger than 5000, repeat from step 1 (max 3 rounds)
+      5. REDUCE: send all notes in one final call and return the summary
+
+
+6. EXAMPLE
+----------
+A big PDF -> 40 chunks -> about 9 batches.
+  MAP:    9 requests, spread out so we stay under 7000 tokens/minute.
+  Notes:  total about 4500 tokens (under 5000, so no shrinking needed).
+  REDUCE: 1 final request -> final summary.
+
+A huge PDF that needs more than 12 MAP requests -> error "document too large".
+
+
+7. POSSIBLE INTERVIEW QUESTIONS
+-------------------------------
+Q: Why map-reduce?
+A: The document is bigger than one request allows, so I split it, summarize the
+   parts, then summarize the summaries.
+
+Q: Why a rate limiter?
+A: The free tier allows only 8000 tokens per minute. Sending requests too fast
+   gives HTTP 429 errors. The limiter waits so we stay under 7000.
+
+Q: Why a safety factor of 1.3?
+A: Our tokenizer counts fewer tokens than the LLM's, so we increase the
+   estimate to avoid going over the limit.
+
+Q: Why a limit of 12 map calls?
+A: Each paced call takes time and AWS Lambda has a 900-second timeout. Better
+   to fail fast than to run out of time after many minutes.
+
+Q: Why does the file have no model code?
+A: The caller passes the functions in (map_invoke, final_invoke), so the logic
+   can be tested without a real LLM.
+
+Q: What happens on a 429 error?
+A: Wait the time the provider asks (Retry-After header, max 60 s, default 20 s)
+   and retry up to 3 times, then raise the error.

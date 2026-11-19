@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field
 from hierarchical.postprocessor import ResultPostprocessor   # pip: docling-hierarchical-pdf
 from transformers import AutoTokenizer
 
+from mapreduce import FINAL_MAX, MAP_MAX_OUTPUT, estimate_tokens, summarize_large
+
 # ---------------------------------------------------------------
 # Settings come from .env (never hardcoded in the code)
 # ---------------------------------------------------------------
@@ -115,6 +117,11 @@ if bedrock_llm:
 else:
     structured_llm = groq_structured
 
+# Map step (long documents): plain text notes, short answers, little "thinking" so the token budget holds
+_map_options = {"reasoning_effort": "low"} if GROQ_MODEL.startswith("openai/gpt-oss") else {}
+groq_map_llm = ChatGroq(model=GROQ_MODEL, temperature=0, max_tokens=MAP_MAX_OUTPUT, **_map_options)
+map_llm = bedrock_llm.with_fallbacks([groq_map_llm]) if bedrock_llm else groq_map_llm
+
 
 # ---------------------------------------------------------------
 # STEP 0: S3 -> local file
@@ -152,15 +159,53 @@ def make_chunks(doc):
 # ---------------------------------------------------------------
 # STEP 3: chunks -> LLM -> summary
 # ---------------------------------------------------------------
-def summarize(chunks, style):
-    text = "\n\n".join(chunks)
+def count_tokens(text):
+    # verbose=False: no "sequence longer than 512" warning (we only count here, the model never sees these ids)
+    return len(tokenizer(text, add_special_tokens=False, verbose=False)["input_ids"])
+
+
+def final_summary(text, style, intro="Summarize this document:"):
     messages = [
         ("system", SYSTEM_PROMPT),                                   # the rules (same for every style)
         ("human",                                                    # the actual job
          f"Summary style: {style}\n{STYLES[style]}\n\n"
-         f"Summarize this document:\n\n{text}"),
+         f"{intro}\n\n{text}"),
     ]
     return structured_llm.invoke(messages)   # a SummaryResult object, already validated
+
+
+def make_notes(text):
+    """MAP step: one section of a long document -> short plain-text notes."""
+    messages = [
+        ("system", SYSTEM_PROMPT),
+        ("human",
+         "This is one part of a longer document. Write concise notes for it: the key facts, "
+         "numbers, findings, decisions and action items, as short bullets (under 250 words). "
+         "Keep the section headings that matter. Do not add anything that is not in the text.\n\n"
+         + text),
+    ]
+    return map_llm.invoke(messages).content
+
+
+def summarize(chunks, style):
+    texts = list(chunks)
+    total = sum(estimate_tokens(t, count_tokens) for t in texts)
+
+    # Small document: one call, exactly as before
+    if total <= FINAL_MAX:
+        return final_summary("\n\n".join(texts), style)
+
+    # Big document: notes per part (map), then one summary of the notes (reduce)
+    print(f"large document (~{total} tokens): map-reduce")
+    return summarize_large(
+        texts,
+        map_invoke=make_notes,
+        final_invoke=lambda notes: final_summary(
+            notes, style,
+            intro="These notes were written, in order, from the consecutive parts of ONE long document. "
+                  "Summarize the whole document:"),
+        count_tokens=count_tokens,
+    )
 
 
 # ---------------------------------------------------------------

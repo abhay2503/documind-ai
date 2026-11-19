@@ -39,7 +39,7 @@ print('build check:', len(DocumentConverter().convert('/check/small.pdf').docume
  && rm -rf /check /tmp/.cache
 
 # 5) Our code (last, because it changes most often -> faster rebuilds)
-COPY s3_main.py db.py handler.py ${LAMBDA_TASK_ROOT}/
+COPY s3_main.py db.py handler.py errors.py mapreduce.py ${LAMBDA_TASK_ROOT}/
 
 # Lambda calls handler.py -> handler(event, context)
 CMD ["handler.handler"]
